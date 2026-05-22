@@ -1,0 +1,208 @@
+name: FLAV CI Pipeline
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    branches: [dev, main]
+
+jobs:
+  # ─────────────────────────────────────────
+  # QUALITY GATE
+  # Roda em todo PR e push para dev/main
+  # ─────────────────────────────────────────
+  quality:
+    name: ✅ Quality Gate
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./frontend
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Instalar dependências
+        run: npm ci
+
+      - name: TypeScript — type check
+        run: npm run type-check
+
+      - name: ESLint — análise estática
+        run: npm run lint
+
+      - name: Prettier — verificar formatação
+        run: npm run format:check
+
+      - name: Vitest — testes unitários com cobertura
+        run: npm run test:coverage
+
+  # ─────────────────────────────────────────
+  # SECURITY GATE
+  # Detecta secrets, vulnerabilidades e SAST
+  # ─────────────────────────────────────────
+  security:
+    name: 🔒 Security Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: npm audit — verificar dependências vulneráveis
+        working-directory: ./frontend
+        run: npm audit --audit-level=high
+
+      - name: Gitleaks — scanner de secrets no código
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: CodeQL — análise estática de segurança (SAST)
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript, typescript
+
+      - name: CodeQL — executar análise
+        uses: github/codeql-action/analyze@v3
+
+  # ─────────────────────────────────────────
+  # BUILD GATE
+  # Só roda após Quality e Security passarem
+  # ─────────────────────────────────────────
+  build:
+    name: 🏗️ Build Gate
+    needs: [quality, security]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Instalar dependências do frontend
+        working-directory: ./frontend
+        run: npm ci
+
+      - name: Build frontend (Vite)
+        working-directory: ./frontend
+        run: npm run build
+
+      - name: Salvar artefato do build
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist/
+          retention-days: 3
+
+  # ─────────────────────────────────────────
+  # DEPLOY — STAGING
+  # Ativado apenas por push na branch dev
+  # ─────────────────────────────────────────
+  deploy-staging:
+    name: 🚀 Deploy → Staging
+    needs: [build]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/dev' && github.event_name == 'push'
+    environment:
+      name: staging
+      url: https://flav-staging.web.app
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Instalar dependências do frontend
+        working-directory: ./frontend
+        run: npm ci
+
+      - name: Build frontend para staging
+        working-directory: ./frontend
+        run: npm run build
+        env:
+          VITE_FIREBASE_PROJECT_ID: ${{ secrets.STAGING_FIREBASE_PROJECT_ID }}
+          VITE_FIREBASE_API_KEY: ${{ secrets.STAGING_FIREBASE_API_KEY }}
+          VITE_FIREBASE_AUTH_DOMAIN: ${{ secrets.STAGING_FIREBASE_AUTH_DOMAIN }}
+          VITE_FIREBASE_STORAGE_BUCKET: ${{ secrets.STAGING_FIREBASE_STORAGE_BUCKET }}
+          VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.STAGING_FIREBASE_MESSAGING_SENDER_ID }}
+          VITE_FIREBASE_APP_ID: ${{ secrets.STAGING_FIREBASE_APP_ID }}
+
+      - name: Deploy → Firebase Hosting (Staging)
+        uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          firebaseServiceAccount: ${{ secrets.STAGING_FIREBASE_SERVICE_ACCOUNT }}
+          channelId: staging
+          projectId: ${{ secrets.STAGING_FIREBASE_PROJECT_ID }}
+
+  # ─────────────────────────────────────────
+  # DEPLOY — PRODUÇÃO
+  # Ativado apenas por push na branch main
+  # Requer aprovação manual (environment rule)
+  # ─────────────────────────────────────────
+  deploy-prod:
+    name: 🚀 Deploy → Production
+    needs: [build]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment:
+      name: production
+      url: https://flav-atleta360.web.app
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Instalar dependências do frontend
+        working-directory: ./frontend
+        run: npm ci
+
+      - name: Build frontend para produção
+        working-directory: ./frontend
+        run: npm run build
+        env:
+          VITE_FIREBASE_PROJECT_ID: ${{ secrets.PROD_FIREBASE_PROJECT_ID }}
+          VITE_FIREBASE_API_KEY: ${{ secrets.PROD_FIREBASE_API_KEY }}
+          VITE_FIREBASE_AUTH_DOMAIN: ${{ secrets.PROD_FIREBASE_AUTH_DOMAIN }}
+          VITE_FIREBASE_STORAGE_BUCKET: ${{ secrets.PROD_FIREBASE_STORAGE_BUCKET }}
+          VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.PROD_FIREBASE_MESSAGING_SENDER_ID }}
+          VITE_FIREBASE_APP_ID: ${{ secrets.PROD_FIREBASE_APP_ID }}
+
+      - name: Deploy → Firebase Hosting (Production)
+        uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          firebaseServiceAccount: ${{ secrets.PROD_FIREBASE_SERVICE_ACCOUNT }}
+          channelId: live
+          projectId: ${{ secrets.PROD_FIREBASE_PROJECT_ID }}

@@ -1,0 +1,129 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Funções auxiliares globais de autenticação e papel do usuário
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(athleteId) {
+      return isAuthenticated() && request.auth.uid == athleteId;
+    }
+    
+    // Obtém o documento do usuário logado para verificar seu perfil (role)
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+    
+    function hasRole(role) {
+      return isAuthenticated() && getUserData().role == role;
+    }
+    
+    // Obtém o documento de perfil do atleta para verificar consentimentos e IDs vinculados
+    function getAthleteData(athleteId) {
+      return get(/databases/$(database)/documents/athletes/$(athleteId)).data;
+    }
+
+    // Regras para a coleção de usuários
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Regras para os perfis dos atletas
+    match /athletes/{athleteId} {
+      allow read: if isAuthenticated() && (
+        isOwner(athleteId) ||
+        (hasRole('treinador') && getAthleteData(athleteId).coachId == request.auth.uid && getAthleteData(athleteId).coach_consent == true) ||
+        (hasRole('medico') && getAthleteData(athleteId).doctorId == request.auth.uid && getAthleteData(athleteId).doctor_consent == true) ||
+        (hasRole('nutricionista') && getAthleteData(athleteId).nutritionistId == request.auth.uid && getAthleteData(athleteId).nutritionist_consent == true)
+      );
+      // Apenas o próprio atleta pode criar ou atualizar seu perfil
+      allow write: if isAuthenticated() && isOwner(athleteId);
+    }
+
+    // Regras para as subcoleções do atleta:
+
+    // 1. Métricas de Performance (FTP, CTL, ATL, TSB)
+    match /athletes/{athleteId}/performance_metrics/{metricId} {
+      allow read: if isAuthenticated() && (
+        isOwner(athleteId) ||
+        (hasRole('treinador') && getAthleteData(athleteId).coachId == request.auth.uid && getAthleteData(athleteId).coach_consent == true) ||
+        (hasRole('medico') && getAthleteData(athleteId).doctorId == request.auth.uid && getAthleteData(athleteId).doctor_consent == true) ||
+        (hasRole('nutricionista') && getAthleteData(athleteId).nutritionistId == request.auth.uid && getAthleteData(athleteId).nutritionist_consent == true)
+      );
+      // Atleta pode gravar suas próprias métricas; Treinador pode gravar caso tenha consentimento
+      allow write: if isAuthenticated() && (
+        isOwner(athleteId) ||
+        (hasRole('treinador') && getAthleteData(athleteId).coachId == request.auth.uid && getAthleteData(athleteId).coach_consent == true)
+      );
+    }
+
+    // 2. Pontos da Curva de Potência
+    match /athletes/{athleteId}/power_curve/{curveId} {
+      allow read: if isAuthenticated() && (
+        isOwner(athleteId) ||
+        (hasRole('treinador') && getAthleteData(athleteId).coachId == request.auth.uid && getAthleteData(athleteId).coach_consent == true) ||
+        (hasRole('medico') && getAthleteData(athleteId).doctorId == request.auth.uid && getAthleteData(athleteId).doctor_consent == true) ||
+        (hasRole('nutricionista') && getAthleteData(athleteId).nutritionistId == request.auth.uid && getAthleteData(athleteId).nutritionist_consent == true)
+      );
+      allow write: if isAuthenticated() && (
+        isOwner(athleteId) ||
+        (hasRole('treinador') && getAthleteData(athleteId).coachId == request.auth.uid && getAthleteData(athleteId).coach_consent == true)
+      );
+    }
+
+    // 3. Registros de Bem-Estar Diário (HRV, RHR, Sono)
+    match /athletes/{athleteId}/wellness_logs/{logId} {
+      allow read: if isAuthenticated() && (
+        isOwner(athleteId) ||
+        (hasRole('treinador') && getAthleteData(athleteId).coachId == request.auth.uid && getAthleteData(athleteId).coach_consent == true) ||
+        (hasRole('medico') && getAthleteData(athleteId).doctorId == request.auth.uid && getAthleteData(athleteId).doctor_consent == true) ||
+        (hasRole('nutricionista') && getAthleteData(athleteId).nutritionistId == request.auth.uid && getAthleteData(athleteId).nutritionist_consent == true)
+      );
+      allow write: if isAuthenticated() && isOwner(athleteId);
+    }
+
+    // 4. Marcadores de Saúde (Exames Laboratoriais e Biológicos)
+    match /athletes/{athleteId}/health_markers/{markerId} {
+      allow read: if isAuthenticated() && (
+        isOwner(athleteId) ||
+        (hasRole('medico') && getAthleteData(athleteId).doctorId == request.auth.uid && getAthleteData(athleteId).doctor_consent == true) ||
+        (hasRole('nutricionista') && getAthleteData(athleteId).nutritionistId == request.auth.uid && getAthleteData(athleteId).nutritionist_consent == true) ||
+        // Treinador só lê se o atleta tiver liberado explicitamente a chave 'share_exams_with_coach'
+        (hasRole('treinador') && getAthleteData(athleteId).coachId == request.auth.uid && getAthleteData(athleteId).coach_consent == true && getAthleteData(athleteId).share_exams_with_coach == true)
+      );
+      // Escrita de exames exclusiva do Médico do Esporte com consentimento ativo
+      allow write: if isAuthenticated() && (
+        hasRole('medico') && getAthleteData(athleteId).doctorId == request.auth.uid && getAthleteData(athleteId).doctor_consent == true
+      );
+    }
+
+    // 5. Diagnósticos e Prontuários Médicos
+    match /athletes/{athleteId}/diagnostics/{diagId} {
+      allow read: if isAuthenticated() && (
+        isOwner(athleteId) ||
+        (hasRole('medico') && getAthleteData(athleteId).doctorId == request.auth.uid && getAthleteData(athleteId).doctor_consent == true)
+      );
+      // Escrita exclusiva do Médico do Esporte
+      allow write: if isAuthenticated() && (
+        hasRole('medico') && getAthleteData(athleteId).doctorId == request.auth.uid && getAthleteData(athleteId).doctor_consent == true
+      );
+    }
+
+    // 6. Protocolos e Planos Nutricionais (Dieta, Suplementação, Intra-Treino)
+    match /athletes/{athleteId}/nutrition_protocols/{protocolId} {
+      allow read: if isAuthenticated() && (
+        isOwner(athleteId) ||
+        (hasRole('nutricionista') && getAthleteData(athleteId).nutritionistId == request.auth.uid && getAthleteData(athleteId).nutritionist_consent == true) ||
+        (hasRole('medico') && getAthleteData(athleteId).doctorId == request.auth.uid && getAthleteData(athleteId).doctor_consent == true) ||
+        (hasRole('treinador') && getAthleteData(athleteId).coachId == request.auth.uid && getAthleteData(athleteId).coach_consent == true)
+      );
+      // Escrita exclusiva do Nutricionista
+      allow write: if isAuthenticated() && (
+        hasRole('nutricionista') && getAthleteData(athleteId).nutritionistId == request.auth.uid && getAthleteData(athleteId).nutritionist_consent == true
+      );
+    }
+  }
+}

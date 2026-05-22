@@ -1,0 +1,35 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(athleteId) {
+      return isAuthenticated() && request.auth.uid == athleteId;
+    }
+    
+    // Obtém dados do perfil do atleta no Firestore a partir das regras do Storage
+    function getAthleteData(athleteId) {
+      return firestore.get(/databases/(default)/documents/athletes/$(athleteId)).data;
+    }
+    
+    // Obtém perfil do usuário logado
+    function getUserData() {
+      return firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data;
+    }
+
+    // Regras de acesso para os exames laboratoriais em PDF
+    match /exams/{athleteId}/{examId} {
+      allow read: if isOwner(athleteId) || (
+        isAuthenticated() &&
+        getUserData().role == 'medico' &&
+        getAthleteData(athleteId).doctorId == request.auth.uid &&
+        getAthleteData(athleteId).doctor_consent == true
+      );
+      // Apenas o próprio atleta pode fazer upload de seus exames em PDF
+      allow write: if isOwner(athleteId);
+    }
+  }
+}
